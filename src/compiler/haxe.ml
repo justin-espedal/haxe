@@ -103,15 +103,74 @@ let expand_env ?(h=None) path  =
 			"%" ^ key ^ "%"
 	) path
 
+(* ocaml 4.08 backport *)
+let open_process_args_full_pid prog args env =
+  let (in_read, in_write) = Unix.pipe ~cloexec:true () in
+  let (out_read, out_write) =
+    try Unix.pipe ~cloexec:true ()
+    with e -> Unix.close in_read; Unix.close in_write; raise e in
+  let (err_read, err_write) =
+    try Unix.pipe ~cloexec:true ()
+    with e -> Unix.close in_read; Unix.close in_write;
+              Unix.close out_read; Unix.close out_write; raise e in
+  let inchan = Unix.in_channel_of_descr in_read in
+  let outchan = Unix.out_channel_of_descr out_write in
+  let errchan = Unix.in_channel_of_descr err_read in
+  let pid =
+  begin
+    try
+      Unix.create_process_env prog args env out_read in_write err_write
+    with e ->
+      Unix.close out_read; Unix.close out_write;
+      Unix.close in_read; Unix.close in_write;
+      Unix.close err_read; Unix.close err_write;
+      raise e
+  end in
+  Unix.close out_read;
+  Unix.close in_write;
+  Unix.close err_write;
+  (inchan, outchan, errchan, pid)
+
+let rec waitpid_non_intr pid =
+  try Unix.waitpid [] pid
+  with Unix.Unix_error (Unix.EINTR, _, _) -> waitpid_non_intr pid
+
+let close_process_full_pid (inchan, outchan, errchan, pid) =
+  close_in inchan;
+  begin try close_out outchan with Sys_error _ -> () end;
+  close_in errchan;
+  snd(waitpid_non_intr pid)
+(* end ocaml 4.08 backport *)
+
+(* path helpers *)
+let as_exe name =
+        if Sys.unix then name else name ^ ".exe"
+
+let find_program name =
+        let name = as_exe name in
+        let pathKey = try Sys.getenv "Path" with Not_found -> "PATH" in
+        let path = try Sys.getenv pathKey with Not_found -> "" in
+        let pathComponents = Str.split (Str.regexp (if Sys.unix then ":" else ";")) path in
+        let sep = if Sys.unix then "/" else "\\" in
+        if Sys.file_exists (Sys.getcwd() ^ sep ^ name) then
+                Sys.getcwd() ^ sep ^ name
+        else
+                let indir = List.find (fun dir -> Sys.file_exists (dir ^ sep ^ name)) pathComponents in
+                indir ^ sep ^ name
+(* end path helpers *)
+
 let add_libs com libs =
 	let global_repo = List.exists (fun a -> a = "--haxelib-global") com.args in
 	let call_haxelib() =
 		let t = Timer.timer ["haxelib"] in
-		let cmd = "haxelib" ^ (if global_repo then " --global" else "") ^ " path " ^ String.concat " " libs in
-		let pin, pout, perr = Unix.open_process_full cmd (Unix.environment()) in
-		let lines = Std.input_list pin in
-		let err = Std.input_list perr in
-		let ret = Unix.close_process_full (pin,pout,perr) in
+		let cmd = try find_program "haxelib" with Not_found -> "haxelib" in
+                let args = Array.of_list ("haxelib"::(if global_repo then "--global"::"path"::libs else "path"::libs)) in
+                let pin, pout, perr, pid = open_process_args_full_pid cmd args (Unix.environment()) in
+                (*ocaml 4.08+: let pin, pout, perr = Unix.open_process_args_full cmd args (Unix.environment()) in*)
+                let lines = Std.input_list pin in
+                let err = Std.input_list perr in
+                let ret = close_process_full_pid (pin,pout,perr,pid) in
+                (*ocaml 4.08+: let ret = Unix.close_process_full (pin,pout,perr) in*)
 		if ret <> Unix.WEXITED 0 then failwith (match lines, err with
 			| [], [] -> "Failed to call haxelib (command not found ?)"
 			| [], [s] when ExtString.String.ends_with (ExtString.String.strip s) "Module not found: path" -> "The haxelib command has been strip'ed, please install it again"
