@@ -8557,7 +8557,7 @@ let generate_source ctx =
    let cmd_defines = ref [] in
    PMap.iter ( fun name value -> match name with
       | "true" | "sys" | "dce" | "cpp" | "debug" -> ()
-      | _ -> cmd_defines := !cmd_defines @ ["-D"; name ^ "=" ^ value] ) common_ctx.defines.Define.values;
+      | _ -> cmd_defines := !cmd_defines @ ["-D" ^ name ^ "=" ^ value] ) common_ctx.defines.Define.values;
    write_build_options common_ctx (common_ctx.file ^ "/Options.txt") common_ctx.defines.Define.values;
    if ( not (Common.defined common_ctx Define.NoCompilation) ) then begin
       let t = Timer.timer ["generate";"cpp";"native compilation"] in
